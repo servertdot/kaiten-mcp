@@ -781,6 +781,316 @@ describe("KaitenClient", () => {
     });
   });
 
+  test("creates a card after board and column boundary checks", async () => {
+    const requests: Array<{ method: string; url: string; body?: string }> = [];
+    const responses = [
+      { id: 703452 },
+      [
+        {
+          id: 977529,
+          title: "Sprint",
+          columns: [{ id: 4665754, title: "Backlog", type: 1, board_id: 977529 }],
+          lanes: [],
+        },
+      ],
+      {
+        id: 49509999,
+        key: "CROSS-9999",
+        title: "New task",
+        board_id: 977529,
+        column_id: 4665754,
+        version: 1,
+      },
+    ];
+    const fakeFetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      requests.push({
+        method: init?.method ?? "GET",
+        url: String(input),
+        ...(typeof init?.body === "string" ? { body: init.body } : {}),
+      });
+      return jsonResponse(responses.shift());
+    }) as typeof fetch;
+
+    const created = await new KaitenClient(config(), fakeFetch).createCard({
+      title: "New task",
+      boardId: 977529,
+      columnId: 4665754,
+    });
+
+    expect(created.id).toBe(49509999);
+    expect(requests.at(-1)).toEqual({
+      method: "POST",
+      url: "https://kaiten.example.test/api/v1/cards",
+      body: JSON.stringify({
+        title: "New task",
+        board_id: 977529,
+        column_id: 4665754,
+      }),
+    });
+  });
+
+  test("refuses create on a board outside the boundary without POST", async () => {
+    const methods: string[] = [];
+    const responses = [{ id: 703452 }, [{ id: 977529, title: "Sprint", columns: [], lanes: [] }]];
+    const fakeFetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      methods.push(init?.method ?? "GET");
+      return jsonResponse(responses.shift());
+    }) as typeof fetch;
+
+    await expect(
+      new KaitenClient(config(), fakeFetch).createCard({
+        title: "New task",
+        boardId: 999999,
+        columnId: 4665754,
+      }),
+    ).rejects.toThrow("outside the configured boundary");
+    expect(methods).not.toContain("POST");
+  });
+
+  test("archives a card with condition=2 after version guard", async () => {
+    const requests: Array<{ method: string; body?: string }> = [];
+    const responses = [
+      { id: 703452 },
+      {
+        id: 49505819,
+        key: "CROSS-3907",
+        title: "Task",
+        board_id: 977529,
+        column_id: 4665754,
+        version: 8,
+      },
+      [{ id: 977529, title: "Sprint", columns: [], lanes: [] }],
+      {
+        id: 49505819,
+        key: "CROSS-3907",
+        title: "Task",
+        board_id: 977529,
+        column_id: 4665754,
+        version: 9,
+        condition: 2,
+      },
+    ];
+    const fakeFetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      requests.push({
+        method: init?.method ?? "GET",
+        ...(typeof init?.body === "string" ? { body: init.body } : {}),
+      });
+      return jsonResponse(responses.shift());
+    }) as typeof fetch;
+
+    const archived = await new KaitenClient(config(), fakeFetch).archiveCard({
+      card: 49505819,
+      expectedVersion: 8,
+    });
+
+    expect(archived.condition).toBe(2);
+    expect(requests.at(-1)).toEqual({
+      method: "PATCH",
+      body: JSON.stringify({ condition: 2 }),
+    });
+  });
+
+  test("adds a checklist item on an allowed card", async () => {
+    const requests: Array<{ method: string; url: string; body?: string }> = [];
+    const responses = [
+      { id: 703452 },
+      {
+        id: 49505819,
+        title: "Task",
+        board_id: 977529,
+        column_id: 4665754,
+      },
+      [{ id: 977529, title: "Sprint", columns: [], lanes: [] }],
+      { id: 9001, text: "Do thing", checked: false },
+    ];
+    const fakeFetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      requests.push({
+        method: init?.method ?? "GET",
+        url: String(input),
+        ...(typeof init?.body === "string" ? { body: init.body } : {}),
+      });
+      return jsonResponse(responses.shift());
+    }) as typeof fetch;
+
+    const item = await new KaitenClient(config(), fakeFetch).addChecklistItem({
+      card: 49505819,
+      checklistId: 77,
+      text: "Do thing",
+    });
+
+    expect(item.id).toBe(9001);
+    expect(requests.at(-1)?.url).toBe(
+      "https://kaiten.example.test/api/v1/cards/49505819/checklists/77/items",
+    );
+  });
+
+  test("adds a card tag by name", async () => {
+    const responses = [
+      { id: 703452 },
+      {
+        id: 49505819,
+        title: "Task",
+        board_id: 977529,
+        column_id: 4665754,
+      },
+      [{ id: 977529, title: "Sprint", columns: [], lanes: [] }],
+      { id: 501, name: "urgent" },
+    ];
+    const fakeFetch = (async () =>
+      jsonResponse(responses.shift())) as unknown as typeof fetch;
+
+    const tag = await new KaitenClient(config(), fakeFetch).addCardTag({
+      card: 49505819,
+      name: "urgent",
+    });
+
+    expect(tag.name).toBe("urgent");
+  });
+
+  test("adds a card member", async () => {
+    const responses = [
+      { id: 703452 },
+      {
+        id: 49505819,
+        title: "Task",
+        board_id: 977529,
+        column_id: 4665754,
+      },
+      [{ id: 977529, title: "Sprint", columns: [], lanes: [] }],
+      { id: 888, username: "dev" },
+    ];
+    const fakeFetch = (async () =>
+      jsonResponse(responses.shift())) as unknown as typeof fetch;
+
+    const member = await new KaitenClient(config(), fakeFetch).addCardMember({
+      card: 49505819,
+      userId: 888,
+    });
+
+    expect(member.id).toBe(888);
+  });
+
+  test("lists card blockers after boundary resolution", async () => {
+    let requestedUrl = "";
+    const responses = [
+      {
+        id: 49505819,
+        title: "Task",
+        board_id: 977529,
+        column_id: 4665754,
+      },
+      [{ id: 977529, title: "Sprint", columns: [], lanes: [] }],
+      [{ id: 12, reason: "waiting" }],
+    ];
+    const fakeFetch = (async (input: RequestInfo | URL) => {
+      requestedUrl = String(input);
+      return jsonResponse(responses.shift());
+    }) as typeof fetch;
+
+    const blockers = await new KaitenClient(config(), fakeFetch).listCardBlockers(
+      { card: 49505819 },
+    );
+
+    expect(blockers).toHaveLength(1);
+    expect(new URL(requestedUrl).pathname).toBe(
+      "/api/v1/cards/49505819/blockers",
+    );
+  });
+
+  test("links a child card when both are in boundary", async () => {
+    const requests: Array<{ method: string; body?: string }> = [];
+    const responses = [
+      { id: 703452 },
+      {
+        id: 49505819,
+        title: "Parent",
+        board_id: 977529,
+        column_id: 4665754,
+      },
+      [{ id: 977529, title: "Sprint", columns: [], lanes: [] }],
+      {
+        id: 49505820,
+        title: "Child",
+        board_id: 977529,
+        column_id: 4665754,
+      },
+      [{ id: 977529, title: "Sprint", columns: [], lanes: [] }],
+      {
+        id: 49505820,
+        title: "Child",
+        board_id: 977529,
+        column_id: 4665754,
+      },
+    ];
+    const fakeFetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      requests.push({
+        method: init?.method ?? "GET",
+        ...(typeof init?.body === "string" ? { body: init.body } : {}),
+      });
+      return jsonResponse(responses.shift());
+    }) as typeof fetch;
+
+    await new KaitenClient(config(), fakeFetch).addCardChild({
+      card: 49505819,
+      childCardId: 49505820,
+    });
+
+    expect(requests.at(-1)).toEqual({
+      method: "POST",
+      body: JSON.stringify({ card_id: 49505820 }),
+    });
+  });
+
+  test("lists timesheet for a date range with personal user filter", async () => {
+    let requestedUrl = "";
+    const responses = [
+      { id: 703452 },
+      [
+        {
+          id: 74041,
+          card_id: 49505819,
+          role_id: -1,
+          time_spent: 60,
+          for_date: "2026-10-16",
+        },
+      ],
+    ];
+    const fakeFetch = (async (input: RequestInfo | URL) => {
+      requestedUrl = String(input);
+      return jsonResponse(responses.shift());
+    }) as typeof fetch;
+
+    const logs = await new KaitenClient(config(), fakeFetch).listTimesheet({
+      from: "2026-10-01",
+      to: "2026-10-16",
+      personal: true,
+    });
+
+    expect(logs).toHaveLength(1);
+    const url = new URL(requestedUrl);
+    expect(url.pathname).toBe("/api/v1/time-logs");
+    expect(url.searchParams.get("from")).toBe("2026-10-01");
+    expect(url.searchParams.get("to")).toBe("2026-10-16");
+    expect(url.searchParams.get("user_ids")).toBe("703452");
+  });
+
+  test("refuses create when actor mismatches expected id", async () => {
+    let requestCount = 0;
+    const fakeFetch = (async (_input: RequestInfo | URL) => {
+      requestCount += 1;
+      return jsonResponse({ id: 999999 });
+    }) as typeof fetch;
+
+    await expect(
+      new KaitenClient(config(), fakeFetch).createCard({
+        title: "New task",
+        boardId: 977529,
+        columnId: 4665754,
+      }),
+    ).rejects.toThrow("expected 703452");
+    expect(requestCount).toBe(1);
+  });
+
   test("downloads only allow-listed attachments within the size limit", async () => {
     const responses = [
       jsonResponse({

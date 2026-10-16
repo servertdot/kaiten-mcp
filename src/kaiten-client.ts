@@ -17,6 +17,9 @@ import type {
   KaitenCustomPropertyValue,
   KaitenDocument,
   KaitenFile,
+  KaitenCardBlocker,
+  KaitenChecklistItem,
+  KaitenTag,
   KaitenTimeLog,
   KaitenUser,
 } from "./types.js";
@@ -101,6 +104,140 @@ export interface RemoveTimeLogInput {
   card: string | number;
   spaceId?: number;
   timeLogId: number;
+}
+
+export interface CreateCardInput {
+  title: string;
+  boardId: number;
+  columnId: number;
+  spaceId?: number;
+  laneId?: number;
+  ownerId?: number;
+  description?: string;
+  typeId?: number;
+  position?: 1 | 2;
+  asap?: boolean;
+  dueDate?: string;
+}
+
+export interface ArchiveCardInput {
+  card: string | number;
+  spaceId?: number;
+  expectedVersion: number;
+}
+
+export interface AddChecklistInput {
+  card: string | number;
+  spaceId?: number;
+  name: string;
+}
+
+export interface AddChecklistItemInput {
+  card: string | number;
+  spaceId?: number;
+  checklistId: number;
+  text: string;
+  checked?: boolean;
+  dueDate?: string | null;
+  responsibleId?: number | null;
+}
+
+export interface UpdateChecklistItemInput {
+  card: string | number;
+  spaceId?: number;
+  checklistId: number;
+  itemId: number;
+  text?: string;
+  checked?: boolean;
+}
+
+export interface RemoveChecklistItemInput {
+  card: string | number;
+  spaceId?: number;
+  checklistId: number;
+  itemId: number;
+}
+
+export interface ListTagsInput {
+  spaceId?: number;
+  query?: string;
+  limit?: number;
+  offset?: number;
+}
+
+export interface AddCardTagInput {
+  card: string | number;
+  spaceId?: number;
+  name: string;
+}
+
+export interface RemoveCardTagInput {
+  card: string | number;
+  spaceId?: number;
+  tagId: number;
+}
+
+export interface AddCardMemberInput {
+  card: string | number;
+  spaceId?: number;
+  userId: number;
+}
+
+export interface RemoveCardMemberInput {
+  card: string | number;
+  spaceId?: number;
+  userId: number;
+}
+
+export interface ListCardBlockersInput {
+  card: string | number;
+  spaceId?: number;
+}
+
+export interface AddCardBlockerInput {
+  card: string | number;
+  spaceId?: number;
+  reason?: string;
+  blockerCardId?: number;
+}
+
+export interface UpdateCardBlockerInput {
+  card: string | number;
+  spaceId?: number;
+  blockerId: number;
+  reason?: string | null;
+  blockerCardId?: number | null;
+}
+
+export interface RemoveCardBlockerInput {
+  card: string | number;
+  spaceId?: number;
+  blockerId: number;
+}
+
+export interface AddCardChildInput {
+  card: string | number;
+  spaceId?: number;
+  childCardId: number;
+}
+
+export interface RemoveCardChildInput {
+  card: string | number;
+  spaceId?: number;
+  childCardId: number;
+}
+
+export interface ListTimesheetInput {
+  from: string;
+  to: string;
+  spaceId?: number;
+  userIds?: number[];
+  spaceIds?: number[];
+  boardIds?: number[];
+  cardIds?: number[];
+  limit?: number;
+  offset?: number;
+  personal?: boolean;
 }
 
 export class KaitenApiError extends Error {
@@ -789,6 +926,391 @@ export class KaitenClient {
         body: JSON.stringify(patch),
       },
     );
+  }
+
+  private async assertBoardColumnAllowed(
+    spaceId: number,
+    boardId: number,
+    columnId: number,
+    laneId?: number,
+  ): Promise<void> {
+    const boards = await this.allowedBoards(spaceId);
+    const board = boards.find((candidate) => candidate.id === boardId);
+    if (!board) {
+      throw new Error(`Board ${boardId} is outside the configured boundary`);
+    }
+    if (!board.columns?.some((column) => column.id === columnId)) {
+      throw new Error(
+        `Column ${columnId} does not belong to board ${boardId} in the configured boundary`,
+      );
+    }
+    if (
+      laneId !== undefined &&
+      !board.lanes?.some((lane) => lane.id === laneId)
+    ) {
+      throw new Error(
+        `Lane ${laneId} does not belong to board ${boardId} in the configured boundary`,
+      );
+    }
+  }
+
+  private async assertCardInBoundary(
+    reference: string | number,
+    spaceId?: number,
+  ): Promise<KaitenCard> {
+    const card = await this.resolveCard(reference, spaceId);
+    await this.spaceIdForCard(card, spaceId);
+    return card;
+  }
+
+  async createCard(input: CreateCardInput): Promise<KaitenCard> {
+    const title = input.title.trim();
+    if (!title) {
+      throw new Error("title is required");
+    }
+    if (!Number.isSafeInteger(input.boardId) || input.boardId <= 0) {
+      throw new Error("board_id must be a positive integer");
+    }
+    if (!Number.isSafeInteger(input.columnId) || input.columnId <= 0) {
+      throw new Error("column_id must be a positive integer");
+    }
+    if (input.position !== undefined && input.position !== 1 && input.position !== 2) {
+      throw new Error("position must be 1 or 2");
+    }
+
+    await this.assertExpectedActor();
+    const spaceId = this.requireSpaceId(input.spaceId);
+    await this.assertBoardColumnAllowed(
+      spaceId,
+      input.boardId,
+      input.columnId,
+      input.laneId,
+    );
+
+    const body: Record<string, unknown> = {
+      title,
+      board_id: input.boardId,
+      column_id: input.columnId,
+    };
+    if (input.laneId !== undefined) body.lane_id = input.laneId;
+    if (input.ownerId !== undefined) body.owner_id = input.ownerId;
+    if (input.description !== undefined) body.description = input.description;
+    if (input.typeId !== undefined) body.type_id = input.typeId;
+    if (input.position !== undefined) body.position = input.position;
+    if (input.asap !== undefined) body.asap = input.asap;
+    if (input.dueDate !== undefined) body.due_date = input.dueDate;
+
+    return this.request<KaitenCard>("cards", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  }
+
+  async archiveCard(input: ArchiveCardInput): Promise<KaitenCard> {
+    await this.assertExpectedActor();
+    const card = await this.resolveCard(input.card, input.spaceId);
+    await this.spaceIdForCard(card, input.spaceId);
+    if (card.version === undefined) {
+      throw new Error("Kaiten did not return the card version; refusing unsafe archive");
+    }
+    if (card.version !== input.expectedVersion) {
+      throw new Error(
+        `Card version is ${card.version}, expected ${input.expectedVersion}; refusing stale archive`,
+      );
+    }
+
+    return this.request<KaitenCard>(`cards/${card.id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ condition: 2 }),
+    });
+  }
+
+  async addChecklist(input: AddChecklistInput): Promise<KaitenChecklistSummary> {
+    const name = input.name.trim();
+    if (!name) {
+      throw new Error("name is required");
+    }
+    await this.assertExpectedActor();
+    const card = await this.assertCardInBoundary(input.card, input.spaceId);
+    return this.request<KaitenChecklistSummary>(`cards/${card.id}/checklists`, {
+      method: "POST",
+      body: JSON.stringify({ name }),
+    });
+  }
+
+  async addChecklistItem(
+    input: AddChecklistItemInput,
+  ): Promise<KaitenChecklistItem> {
+    const text = input.text.trim();
+    if (!text) {
+      throw new Error("text is required");
+    }
+    if (!Number.isSafeInteger(input.checklistId) || input.checklistId <= 0) {
+      throw new Error("checklist_id must be a positive integer");
+    }
+    await this.assertExpectedActor();
+    const card = await this.assertCardInBoundary(input.card, input.spaceId);
+    const body: Record<string, unknown> = { text };
+    if (input.checked !== undefined) body.checked = input.checked;
+    if (input.dueDate !== undefined) body.due_date = input.dueDate;
+    if (input.responsibleId !== undefined) {
+      body.responsible_id = input.responsibleId;
+    }
+    return this.request<KaitenChecklistItem>(
+      `cards/${card.id}/checklists/${input.checklistId}/items`,
+      { method: "POST", body: JSON.stringify(body) },
+    );
+  }
+
+  async updateChecklistItem(
+    input: UpdateChecklistItemInput,
+  ): Promise<KaitenChecklistItem> {
+    if (!Number.isSafeInteger(input.checklistId) || input.checklistId <= 0) {
+      throw new Error("checklist_id must be a positive integer");
+    }
+    if (!Number.isSafeInteger(input.itemId) || input.itemId <= 0) {
+      throw new Error("item_id must be a positive integer");
+    }
+    const patch: Record<string, unknown> = {};
+    if (input.text !== undefined) {
+      const text = input.text.trim();
+      if (!text) {
+        throw new Error("text must not be empty when provided");
+      }
+      patch.text = text;
+    }
+    if (input.checked !== undefined) patch.checked = input.checked;
+    if (Object.keys(patch).length === 0) {
+      throw new Error("At least one checklist item field must be provided for update");
+    }
+
+    await this.assertExpectedActor();
+    const card = await this.assertCardInBoundary(input.card, input.spaceId);
+    return this.request<KaitenChecklistItem>(
+      `cards/${card.id}/checklists/${input.checklistId}/items/${input.itemId}`,
+      { method: "PATCH", body: JSON.stringify(patch) },
+    );
+  }
+
+  async removeChecklistItem(
+    input: RemoveChecklistItemInput,
+  ): Promise<{ id: number }> {
+    if (!Number.isSafeInteger(input.checklistId) || input.checklistId <= 0) {
+      throw new Error("checklist_id must be a positive integer");
+    }
+    if (!Number.isSafeInteger(input.itemId) || input.itemId <= 0) {
+      throw new Error("item_id must be a positive integer");
+    }
+
+    await this.assertExpectedActor();
+    const card = await this.assertCardInBoundary(input.card, input.spaceId);
+    return this.request<{ id: number }>(
+      `cards/${card.id}/checklists/${input.checklistId}/items/${input.itemId}`,
+      { method: "DELETE" },
+    );
+  }
+
+  async listTags(input: ListTagsInput = {}): Promise<KaitenTag[]> {
+    const params = new URLSearchParams({
+      limit: String(Math.min(Math.max(input.limit ?? 100, 1), 100)),
+      offset: String(Math.max(input.offset ?? 0, 0)),
+    });
+    const spaceId = this.selectSpaceId(input.spaceId);
+    if (spaceId !== undefined) {
+      params.set("space_id", String(spaceId));
+    }
+    if (input.query) params.set("query", input.query);
+    return this.request<KaitenTag[]>("tags", {}, params);
+  }
+
+  async addCardTag(input: AddCardTagInput): Promise<KaitenTag> {
+    const name = input.name.trim();
+    if (!name) {
+      throw new Error("name is required");
+    }
+    await this.assertExpectedActor();
+    const card = await this.assertCardInBoundary(input.card, input.spaceId);
+    return this.request<KaitenTag>(`cards/${card.id}/tags`, {
+      method: "POST",
+      body: JSON.stringify({ name }),
+    });
+  }
+
+  async removeCardTag(input: RemoveCardTagInput): Promise<{ id: number }> {
+    if (!Number.isSafeInteger(input.tagId) || input.tagId <= 0) {
+      throw new Error("tag_id must be a positive integer");
+    }
+    await this.assertExpectedActor();
+    const card = await this.assertCardInBoundary(input.card, input.spaceId);
+    return this.request<{ id: number }>(
+      `cards/${card.id}/tags/${input.tagId}`,
+      { method: "DELETE" },
+    );
+  }
+
+  async addCardMember(input: AddCardMemberInput): Promise<KaitenUser> {
+    if (!Number.isSafeInteger(input.userId) || input.userId <= 0) {
+      throw new Error("user_id must be a positive integer");
+    }
+    await this.assertExpectedActor();
+    const card = await this.assertCardInBoundary(input.card, input.spaceId);
+    return this.request<KaitenUser>(`cards/${card.id}/members`, {
+      method: "POST",
+      body: JSON.stringify({ user_id: input.userId }),
+    });
+  }
+
+  async removeCardMember(
+    input: RemoveCardMemberInput,
+  ): Promise<{ id: number }> {
+    if (!Number.isSafeInteger(input.userId) || input.userId <= 0) {
+      throw new Error("user_id must be a positive integer");
+    }
+    await this.assertExpectedActor();
+    const card = await this.assertCardInBoundary(input.card, input.spaceId);
+    return this.request<{ id: number }>(
+      `cards/${card.id}/members/${input.userId}`,
+      { method: "DELETE" },
+    );
+  }
+
+  async listCardBlockers(
+    input: ListCardBlockersInput,
+  ): Promise<KaitenCardBlocker[]> {
+    const card = await this.assertCardInBoundary(input.card, input.spaceId);
+    return this.request<KaitenCardBlocker[]>(`cards/${card.id}/blockers`);
+  }
+
+  async addCardBlocker(input: AddCardBlockerInput): Promise<KaitenCardBlocker> {
+    const hasReason =
+      input.reason !== undefined && input.reason.trim().length > 0;
+    const hasBlockerCard =
+      input.blockerCardId !== undefined &&
+      Number.isSafeInteger(input.blockerCardId) &&
+      input.blockerCardId > 0;
+    if (!hasReason && !hasBlockerCard) {
+      throw new Error("Provide reason and/or blocker_card_id");
+    }
+
+    await this.assertExpectedActor();
+    const card = await this.assertCardInBoundary(input.card, input.spaceId);
+    const body: Record<string, unknown> = {};
+    if (hasReason) body.reason = input.reason!.trim();
+    if (hasBlockerCard) {
+      const blockerCard = await this.getCard(input.blockerCardId!);
+      await this.spaceIdForCard(blockerCard, input.spaceId);
+      body.blocker_card_id = input.blockerCardId;
+    }
+
+    return this.request<KaitenCardBlocker>(`cards/${card.id}/blockers`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  }
+
+  async updateCardBlocker(
+    input: UpdateCardBlockerInput,
+  ): Promise<KaitenCardBlocker> {
+    if (!Number.isSafeInteger(input.blockerId) || input.blockerId <= 0) {
+      throw new Error("blocker_id must be a positive integer");
+    }
+    const patch: Record<string, unknown> = {};
+    if (input.reason !== undefined) patch.reason = input.reason;
+    if (input.blockerCardId !== undefined) {
+      if (input.blockerCardId !== null) {
+        const blockerCard = await this.getCard(input.blockerCardId);
+        await this.spaceIdForCard(blockerCard, input.spaceId);
+      }
+      patch.blocker_card_id = input.blockerCardId;
+    }
+    if (Object.keys(patch).length === 0) {
+      throw new Error("At least one blocker field must be provided for update");
+    }
+
+    await this.assertExpectedActor();
+    const card = await this.assertCardInBoundary(input.card, input.spaceId);
+    return this.request<KaitenCardBlocker>(
+      `cards/${card.id}/blockers/${input.blockerId}`,
+      { method: "PATCH", body: JSON.stringify(patch) },
+    );
+  }
+
+  async removeCardBlocker(
+    input: RemoveCardBlockerInput,
+  ): Promise<{ id: number }> {
+    if (!Number.isSafeInteger(input.blockerId) || input.blockerId <= 0) {
+      throw new Error("blocker_id must be a positive integer");
+    }
+    await this.assertExpectedActor();
+    const card = await this.assertCardInBoundary(input.card, input.spaceId);
+    return this.request<{ id: number }>(
+      `cards/${card.id}/blockers/${input.blockerId}`,
+      { method: "DELETE" },
+    );
+  }
+
+  async addCardChild(input: AddCardChildInput): Promise<KaitenCard> {
+    if (!Number.isSafeInteger(input.childCardId) || input.childCardId <= 0) {
+      throw new Error("card_id must be a positive integer");
+    }
+    await this.assertExpectedActor();
+    const parent = await this.assertCardInBoundary(input.card, input.spaceId);
+    const child = await this.getCard(input.childCardId);
+    await this.spaceIdForCard(child, input.spaceId);
+    return this.request<KaitenCard>(`cards/${parent.id}/children`, {
+      method: "POST",
+      body: JSON.stringify({ card_id: input.childCardId }),
+    });
+  }
+
+  async removeCardChild(input: RemoveCardChildInput): Promise<{ id: number }> {
+    if (!Number.isSafeInteger(input.childCardId) || input.childCardId <= 0) {
+      throw new Error("card_id must be a positive integer");
+    }
+    await this.assertExpectedActor();
+    const card = await this.assertCardInBoundary(input.card, input.spaceId);
+    return this.request<{ id: number }>(
+      `cards/${card.id}/children/${input.childCardId}`,
+      { method: "DELETE" },
+    );
+  }
+
+  async listTimesheet(input: ListTimesheetInput): Promise<KaitenTimeLog[]> {
+    const from = this.assertTimeLogDate(input.from);
+    const to = this.assertTimeLogDate(input.to);
+    const params = new URLSearchParams({
+      from,
+      to,
+      limit: String(Math.min(Math.max(input.limit ?? 100, 1), 100)),
+      offset: String(Math.max(input.offset ?? 0, 0)),
+    });
+
+    const personal = input.personal ?? true;
+    if (personal) {
+      const actor = await this.currentUser();
+      params.set("user_ids", String(actor.id));
+    } else if (input.userIds?.length) {
+      params.set("user_ids", input.userIds.join(","));
+    }
+
+    const spaceId = this.selectSpaceId(input.spaceId);
+    if (spaceId !== undefined) {
+      params.set("space_ids", String(spaceId));
+    } else if (input.spaceIds?.length) {
+      for (const id of input.spaceIds) {
+        this.assertSpaceAllowed(id);
+      }
+      params.set("space_ids", input.spaceIds.join(","));
+    }
+
+    if (input.boardIds?.length) {
+      params.set("board_ids", input.boardIds.join(","));
+    }
+    if (input.cardIds?.length) {
+      params.set("card_ids", input.cardIds.join(","));
+    }
+
+    return this.request<KaitenTimeLog[]>("time-logs", {}, params);
   }
 
   async removeTimeLog(
