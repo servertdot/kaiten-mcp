@@ -195,3 +195,18 @@ export interface AttachmentContent {
   contentType: string;
   bytes: Uint8Array;
 }
+
+export interface KaitenTag {
+  id: number;
+  name: string;
+  color?: number | null;
+}
+
+export interface KaitenCardBlocker {
+  id: number;
+  card_id?: number;
+  reason?: string | null;
+  blocker_card_id?: number | null;
+  created?: string;
+  updated?: string;
+}

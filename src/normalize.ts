@@ -1,9 +1,12 @@
 import type {
   KaitenBoard,
   KaitenCard,
+  KaitenCardBlocker,
+  KaitenChecklistItem,
   KaitenChecklistSummary,
   KaitenComment,
   KaitenFile,
+  KaitenTag,
   KaitenTimeLog,
   KaitenUser,
 } from "./types.js";
@@ -134,5 +137,34 @@ export function normalizeFile(file: KaitenFile) {
     mime_type: file.mime_type ?? null,
     comment_id: file.comment_id ?? null,
     url: file.url,
+  };
+}
+
+export function normalizeTag(tag: KaitenTag) {
+  return {
+    id: tag.id,
+    name: tag.name,
+    color: tag.color ?? null,
+  };
+}
+
+export function normalizeChecklistItem(item: KaitenChecklistItem) {
+  return {
+    id: item.id,
+    text: item.text,
+    checked: item.checked,
+    due_date: item.due_date ?? null,
+    responsible_id: item.responsible_id ?? null,
+  };
+}
+
+export function normalizeCardBlocker(blocker: KaitenCardBlocker) {
+  return {
+    id: blocker.id,
+    card_id: blocker.card_id ?? null,
+    reason: blocker.reason ?? null,
+    blocker_card_id: blocker.blocker_card_id ?? null,
+    created: blocker.created ?? null,
+    updated: blocker.updated ?? null,
   };
 }
