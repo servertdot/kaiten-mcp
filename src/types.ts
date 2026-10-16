@@ -210,3 +210,26 @@ export interface KaitenCardBlocker {
   created?: string;
   updated?: string;
 }
+
+export interface KaitenCardType {
+  id: number;
+  name: string;
+  letter?: string | null;
+  color?: number | null;
+  archived?: boolean;
+  description_template?: string | null;
+}
+
+export interface KaitenActivityEvent {
+  id: number;
+  created: string;
+  action: string;
+  author_id?: number | null;
+  card_id?: number | null;
+}
+
+export interface KaitenActivityPage {
+  items: KaitenActivityEvent[];
+  limit: number;
+  next_cursor: string | null;
+}

@@ -1,10 +1,13 @@
 import type {
+  KaitenActivityEvent,
   KaitenBoard,
   KaitenCard,
   KaitenCardBlocker,
+  KaitenCardType,
   KaitenChecklistItem,
   KaitenChecklistSummary,
   KaitenComment,
+  KaitenDocument,
   KaitenFile,
   KaitenTag,
   KaitenTimeLog,
@@ -166,5 +169,68 @@ export function normalizeCardBlocker(blocker: KaitenCardBlocker) {
     blocker_card_id: blocker.blocker_card_id ?? null,
     created: blocker.created ?? null,
     updated: blocker.updated ?? null,
+  };
+}
+
+export function normalizeCardType(cardType: KaitenCardType) {
+  return {
+    id: cardType.id,
+    name: cardType.name,
+    letter: cardType.letter ?? null,
+    color: cardType.color ?? null,
+    archived: cardType.archived ?? false,
+    description_template: cardType.description_template ?? null,
+  };
+}
+
+export function normalizeDocumentSummary(document: KaitenDocument) {
+  return {
+    uid: document.uid,
+    id: document.id,
+    title: document.title,
+    key: document.key ?? null,
+    archived: document.archived ?? false,
+    updated: document.updated ?? null,
+    access: document.access ?? null,
+  };
+}
+
+export function normalizeActivityEvent(raw: Record<string, unknown>): KaitenActivityEvent {
+  const id = typeof raw.id === "number" ? raw.id : Number(raw.id);
+  if (!Number.isSafeInteger(id)) {
+    throw new Error("Activity event is missing a valid id");
+  }
+  const created =
+    typeof raw.created === "string"
+      ? raw.created
+      : typeof raw.created_at === "string"
+        ? raw.created_at
+        : "";
+  const action =
+    typeof raw.action === "string"
+      ? raw.action
+      : typeof raw.type === "string"
+        ? raw.type
+        : String(raw.action ?? raw.type ?? "");
+  const authorId =
+    typeof raw.author_id === "number"
+      ? raw.author_id
+      : typeof raw.user_id === "number"
+        ? raw.user_id
+        : null;
+  const cardId =
+    typeof raw.card_id === "number"
+      ? raw.card_id
+      : typeof raw.card === "object" &&
+          raw.card !== null &&
+          typeof (raw.card as { id?: unknown }).id === "number"
+        ? (raw.card as { id: number }).id
+        : null;
+  return {
+    id,
+    created,
+    action,
+    author_id: authorId,
+    card_id: cardId,
   };
 }
