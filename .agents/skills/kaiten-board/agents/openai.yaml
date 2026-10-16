@@ -1,0 +1,14 @@
+interface:
+  display_name: "Kaiten Board"
+  short_description: "Искать, читать и безопасно менять карточки Kaiten"
+  default_prompt: "Use $kaiten-board to find, inspect, and safely update the relevant Kaiten card."
+
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "kaiten"
+      description: "Локальный MCP-сервер для Kaiten"
+      transport: "stdio"
+
+policy:
+  allow_implicit_invocation: true

@@ -1,0 +1,18 @@
+# Copy to config.toml and fill in local values. Do not commit config.toml.
+
+[mcp_servers.kaiten]
+command = "bun"
+args = ["run", "src/index.ts"]
+cwd = "/absolute/path/to/kaiten-mcp"
+enabled = true
+startup_timeout_sec = 15
+
+[mcp_servers.kaiten.env]
+KAITEN_BASE_URL = "https://your-company.kaiten.ru/api/v1"
+KAITEN_SPACE_IDS = "123"
+KAITEN_DEFAULT_SPACE_ID = "123"
+# KAITEN_EXPECTED_ACTOR_ID = "456"
+# KAITEN_ALLOWED_BOARD_IDS = "789,790"
+# KAITEN_FILE_HOSTS = "files.your-company.kaiten.ru"
+KAITEN_MAX_ATTACHMENT_BYTES = "5242880"
+# Prefer loading KAITEN_TOKEN from the process environment or a local .env file.
