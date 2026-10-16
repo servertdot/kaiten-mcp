@@ -1134,4 +1134,230 @@ describe("KaitenClient", () => {
     expect(attachment.contentType).toBe("image/png");
     expect([...attachment.bytes]).toEqual([1, 2, 3]);
   });
+
+  test("lists users with pagination and inactive filter", async () => {
+    let requestedUrl = "";
+    const fakeFetch = (async (input: RequestInfo | URL) => {
+      requestedUrl = String(input);
+      return jsonResponse([{ id: 1, full_name: "Ada", email: "hidden@example.test" }]);
+    }) as typeof fetch;
+
+    const users = await new KaitenClient(config(), fakeFetch).listUsers({
+      query: "ada",
+      limit: 10,
+      offset: 5,
+      includeInactive: true,
+    });
+
+    const url = new URL(requestedUrl);
+    expect(url.pathname).toBe("/api/v1/users");
+    expect(url.searchParams.get("query")).toBe("ada");
+    expect(url.searchParams.get("include_inactive")).toBe("true");
+    expect(users[0]?.full_name).toBe("Ada");
+  });
+
+  test("lists card types from latest API and hides archived by default", async () => {
+    let requestedUrl = "";
+    const fakeFetch = (async (input: RequestInfo | URL) => {
+      requestedUrl = String(input);
+      return jsonResponse([
+        { id: 1, name: "Task", archived: false },
+        { id: 2, name: "Old", archived: true },
+      ]);
+    }) as typeof fetch;
+
+    const types = await new KaitenClient(config(), fakeFetch).listCardTypes();
+
+    expect(requestedUrl).toContain("/api/latest/card-types");
+    expect(types.map((type) => type.id)).toEqual([1]);
+  });
+
+  test("updates a card comment after actor and boundary checks", async () => {
+    const methods: string[] = [];
+    const responses = [
+      { id: 703452 },
+      cardResponse(),
+      boardsResponse(),
+      { id: 900, text: "edited", author: { id: 703452 } },
+    ];
+    const fakeFetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      methods.push(init?.method ?? "GET");
+      return jsonResponse(responses.shift());
+    }) as typeof fetch;
+
+    const updated = await new KaitenClient(config(), fakeFetch).updateComment({
+      card: 49505819,
+      commentId: 900,
+      text: "edited",
+    });
+    expect(updated.text).toBe("edited");
+    expect(methods).toContain("PATCH");
+  });
+
+  test("removes a card comment after actor and boundary checks", async () => {
+    const methods: string[] = [];
+    const responses = [
+      { id: 703452 },
+      cardResponse(),
+      boardsResponse(),
+      { id: 900 },
+    ];
+    const fakeFetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      methods.push(init?.method ?? "GET");
+      return jsonResponse(responses.shift());
+    }) as typeof fetch;
+
+    const removed = await new KaitenClient(config(), fakeFetch).removeComment({
+      card: 49505819,
+      commentId: 900,
+    });
+    expect(removed.id).toBe(900);
+    expect(methods).toContain("DELETE");
+  });
+
+  test("searches documents with query and offset on latest API", async () => {
+    let requestedUrl = "";
+    const fakeFetch = (async (input: RequestInfo | URL) => {
+      requestedUrl = String(input);
+      return jsonResponse([
+        { uid: "doc-uid", id: 7, title: "Spec", key: "SPEC_1" },
+      ]);
+    }) as typeof fetch;
+
+    const documents = await new KaitenClient(config(), fakeFetch).listDocuments({
+      query: "Spec",
+      limit: 20,
+      offset: 10,
+    });
+
+    const url = new URL(requestedUrl);
+    expect(url.pathname).toBe("/api/latest/documents");
+    expect(url.searchParams.get("query")).toBe("Spec");
+    expect(url.searchParams.get("offset")).toBe("10");
+    expect(documents[0]?.key).toBe("SPEC_1");
+  });
+
+  test("reads a document by uid via latest API", async () => {
+    const uid = "a3f7c2d1-84e5-4b2a-9c6f-1d2e3f4a5b6c";
+    const fakeFetch = (async (input: RequestInfo | URL) => {
+      const url = new URL(String(input));
+      if (url.pathname === `/api/latest/documents/${uid}`) {
+        return jsonResponse({ uid, id: 42, title: "Doc", data: { type: "doc" } });
+      }
+      return jsonResponse({ message: "not found" }, 404);
+    }) as typeof fetch;
+
+    const document = await new KaitenClient(config(), fakeFetch).readDocument(uid);
+    expect(document.title).toBe("Doc");
+  });
+
+  test("lists company activity and maps card filter to card_id", async () => {
+    let requestedUrl = "";
+    const responses = [
+      cardResponse(),
+      boardsResponse(),
+      {
+        items: [{ id: 1, created: "2026-10-16T10:00:00Z", action: "comment_add" }],
+        next_cursor: "next",
+      },
+    ];
+    const fakeFetch = (async (input: RequestInfo | URL) => {
+      requestedUrl = String(input);
+      return jsonResponse(responses.shift());
+    }) as typeof fetch;
+
+    const page = await new KaitenClient(config(), fakeFetch).listActivity({
+      card: 49505819,
+      limit: 25,
+    });
+
+    const url = new URL(requestedUrl);
+    expect(url.pathname).toBe("/api/latest/company/activity");
+    expect(url.searchParams.get("card_id")).toBe("49505819");
+    expect(page.items[0]?.action).toBe("comment_add");
+    expect(page.next_cursor).toBe("next");
+  });
+
+  test("surfaces company permission errors for activity feed", async () => {
+    const fakeFetch = (async () =>
+      jsonResponse({ message: "forbidden" }, 403)) as unknown as typeof fetch;
+
+    await expect(new KaitenClient(config(), fakeFetch).listActivity()).rejects.toThrow(
+      "company-level permission",
+    );
+  });
+
+  test("uploads multipart attachments without forcing JSON content type", async () => {
+    const payload = Buffer.from("hello").toString("base64");
+    const headersSeen: Headers[] = [];
+    const responses = [
+      { id: 703452 },
+      cardResponse(),
+      boardsResponse(),
+      {
+        id: 44272585,
+        url: "https://files.example.test/a.txt",
+        name: "a.txt",
+        type: 8,
+        size: 5,
+      },
+    ];
+    const fakeFetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      headersSeen.push(new Headers(init?.headers));
+      return jsonResponse(responses.shift());
+    }) as typeof fetch;
+
+    const file = await new KaitenClient(config(), fakeFetch).uploadAttachment({
+      card: 49505819,
+      filename: "a.txt",
+      contentBase64: payload,
+      contentType: "text/plain",
+    });
+
+    expect(file.name).toBe("a.txt");
+    const uploadHeaders = headersSeen.find(
+      (headers) => headers.get("authorization") && !headers.get("content-type"),
+    );
+    expect(uploadHeaders).toBeDefined();
+  });
+
+  test("refuses oversized attachment uploads before posting", async () => {
+    let requestCount = 0;
+    const fakeFetch = (async () => {
+      requestCount += 1;
+      return jsonResponse({ id: 703452 });
+    }) as unknown as typeof fetch;
+
+    await expect(
+      new KaitenClient(config(), fakeFetch).uploadAttachment({
+        card: 49505819,
+        filename: "big.bin",
+        contentBase64: Buffer.alloc(1025, 1).toString("base64"),
+      }),
+    ).rejects.toThrow("limit is 1024");
+    expect(requestCount).toBe(0);
+  });
 });
+
+function cardResponse(overrides: Record<string, unknown> = {}) {
+  return {
+    id: 49505819,
+    key: "CROSS-3907",
+    title: "Task",
+    board_id: 977529,
+    column_id: 4665754,
+    version: 8,
+    ...overrides,
+  };
+}
+
+function boardsResponse() {
+  return [
+    {
+      id: 977529,
+      title: "Sprint",
+      columns: [{ id: 4665754, title: "Backlog", type: 1, board_id: 977529 }],
+      lanes: [],
+    },
+  ];
+}
