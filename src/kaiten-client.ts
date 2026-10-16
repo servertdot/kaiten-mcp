@@ -278,6 +278,7 @@ export interface ListActivityInput {
   limit?: number;
   cursor?: string;
   card?: string | number;
+  spaceId?: number;
   authorId?: number;
   actions?: string;
   createdAfter?: string;
@@ -999,7 +1000,7 @@ export class KaitenClient {
     if (input.createdAfter) params.set("created_after", input.createdAfter);
     if (input.createdBefore) params.set("created_before", input.createdBefore);
     if (input.card !== undefined) {
-      const card = await this.assertCardInBoundary(input.card);
+      const card = await this.assertCardInBoundary(input.card, input.spaceId);
       params.set("card_id", String(card.id));
     }
 
