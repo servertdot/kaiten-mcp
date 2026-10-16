@@ -447,6 +447,283 @@ test("registers and serves kaiten_add_card_child over MCP", async () => {
   }
 });
 
+test("registers and serves kaiten_list_users over MCP", async () => {
+  const fakeFetch = (async (input: RequestInfo | URL) => {
+    const url = new URL(String(input));
+    if (url.pathname === "/api/v1/users") {
+      return jsonResponse([{ id: 888, full_name: "Peer", username: "peer" }]);
+    }
+    return new Response("Not found", { status: 404 });
+  }) as typeof fetch;
+
+  const server = createServer(new KaitenClient(baseWriteConfig(), fakeFetch));
+  const client = new Client({ name: "test-client", version: "0.1.0" });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  await server.connect(serverTransport);
+  await client.connect(clientTransport);
+
+  try {
+    const response = await client.callTool({
+      name: "kaiten_list_users",
+      arguments: { query: "peer" },
+    });
+    expect(response.isError).not.toBe(true);
+    const structured = response.structuredContent as {
+      result?: { users?: Array<{ id?: number; full_name?: string }> };
+    };
+    expect(structured?.result?.users?.[0]?.full_name).toBe("Peer");
+  } finally {
+    await client.close();
+    await server.close();
+  }
+});
+
+test("registers and serves kaiten_list_card_types over MCP", async () => {
+  const fakeFetch = (async (input: RequestInfo | URL) => {
+    const url = new URL(String(input));
+    if (url.pathname === "/api/latest/card-types") {
+      return jsonResponse([{ id: 3, name: "Bug", archived: false }]);
+    }
+    return new Response("Not found", { status: 404 });
+  }) as typeof fetch;
+
+  const server = createServer(new KaitenClient(baseWriteConfig(), fakeFetch));
+  const client = new Client({ name: "test-client", version: "0.1.0" });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  await server.connect(serverTransport);
+  await client.connect(clientTransport);
+
+  try {
+    const response = await client.callTool({
+      name: "kaiten_list_card_types",
+      arguments: {},
+    });
+    expect(response.isError).not.toBe(true);
+    const structured = response.structuredContent as {
+      result?: { card_types?: Array<{ name?: string }> };
+    };
+    expect(structured?.result?.card_types?.[0]?.name).toBe("Bug");
+  } finally {
+    await client.close();
+    await server.close();
+  }
+});
+
+test("registers and serves kaiten_update_comment over MCP", async () => {
+  const responses = [
+    { id: 703452 },
+    cardResponse(),
+    boardsResponse(),
+    { id: 12, text: "fixed typo", author: { id: 703452 } },
+  ];
+  const fakeFetch = (async () =>
+    jsonResponse(responses.shift())) as unknown as typeof fetch;
+  const server = createServer(new KaitenClient(baseWriteConfig(), fakeFetch));
+  const client = new Client({ name: "test-client", version: "0.1.0" });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  await server.connect(serverTransport);
+  await client.connect(clientTransport);
+
+  try {
+    const response = await client.callTool({
+      name: "kaiten_update_comment",
+      arguments: { card: 49505819, comment_id: 12, text: "fixed typo" },
+    });
+    expect(response.isError).not.toBe(true);
+    const structured = response.structuredContent as { result?: { text?: string } };
+    expect(structured?.result?.text).toBe("fixed typo");
+  } finally {
+    await client.close();
+    await server.close();
+  }
+});
+
+test("registers and serves kaiten_remove_comment over MCP", async () => {
+  const responses = [
+    cardResponse(),
+    boardsResponse(),
+    { id: 703452 },
+    cardResponse(),
+    { id: 12 },
+  ];
+  const fakeFetch = (async () =>
+    jsonResponse(responses.shift())) as unknown as typeof fetch;
+  const server = createServer(new KaitenClient(baseWriteConfig(), fakeFetch));
+  const client = new Client({ name: "test-client", version: "0.1.0" });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  await server.connect(serverTransport);
+  await client.connect(clientTransport);
+
+  try {
+    const response = await client.callTool({
+      name: "kaiten_remove_comment",
+      arguments: { card: 49505819, comment_id: 12 },
+    });
+    expect(response.isError).not.toBe(true);
+    const structured = response.structuredContent as {
+      result?: { id?: number; card?: { key?: string } };
+    };
+    expect(structured?.result?.id).toBe(12);
+    expect(structured?.result?.card?.key).toBe("CROSS-3907");
+  } finally {
+    await client.close();
+    await server.close();
+  }
+});
+
+test("registers and serves kaiten_search_documents over MCP", async () => {
+  const uid = "doc-search-uid";
+  const fakeFetch = (async (input: RequestInfo | URL) => {
+    const url = new URL(String(input));
+    if (url.pathname === "/api/latest/documents") {
+      return jsonResponse([{ uid, id: 9, title: "Roadmap", key: "ROADMAP" }]);
+    }
+    return new Response("Not found", { status: 404 });
+  }) as typeof fetch;
+
+  const server = createServer(new KaitenClient(baseWriteConfig(), fakeFetch));
+  const client = new Client({ name: "test-client", version: "0.1.0" });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  await server.connect(serverTransport);
+  await client.connect(clientTransport);
+
+  try {
+    const response = await client.callTool({
+      name: "kaiten_search_documents",
+      arguments: { query: "Road" },
+    });
+    expect(response.isError).not.toBe(true);
+    const structured = response.structuredContent as {
+      result?: { documents?: Array<{ uid?: string; title?: string }> };
+    };
+    expect(structured?.result?.documents?.[0]?.title).toBe("Roadmap");
+  } finally {
+    await client.close();
+    await server.close();
+  }
+});
+
+test("registers and serves kaiten_read_document over MCP", async () => {
+  const uid = "a3f7c2d1-84e5-4b2a-9c6f-1d2e3f4a5b6c";
+  const fakeFetch = (async (input: RequestInfo | URL) => {
+    const url = new URL(String(input));
+    if (url.pathname === `/api/latest/documents/${uid}`) {
+      return jsonResponse({
+        uid,
+        id: 11,
+        title: "Notes",
+        data: {
+          type: "doc",
+          content: [
+            {
+              type: "paragraph",
+              content: [{ type: "text", text: "Body" }],
+            },
+          ],
+        },
+      });
+    }
+    return new Response("Not found", { status: 404 });
+  }) as typeof fetch;
+
+  const server = createServer(new KaitenClient(baseWriteConfig(), fakeFetch));
+  const client = new Client({ name: "test-client", version: "0.1.0" });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  await server.connect(serverTransport);
+  await client.connect(clientTransport);
+
+  try {
+    const response = await client.callTool({
+      name: "kaiten_read_document",
+      arguments: { document: uid },
+    });
+    expect(response.isError).not.toBe(true);
+    const structured = response.structuredContent as {
+      result?: { document?: { text?: string } };
+    };
+    expect(structured?.result?.document?.text).toBe("Body");
+  } finally {
+    await client.close();
+    await server.close();
+  }
+});
+
+test("registers and serves kaiten_list_activity over MCP", async () => {
+  const fakeFetch = (async (input: RequestInfo | URL) => {
+    const url = new URL(String(input));
+    if (url.pathname === "/api/latest/company/activity") {
+      return jsonResponse({
+        items: [{ id: 1, created: "2026-10-16T09:00:00Z", action: "card_update" }],
+        next_cursor: null,
+      });
+    }
+    return new Response("Not found", { status: 404 });
+  }) as typeof fetch;
+
+  const server = createServer(new KaitenClient(baseWriteConfig(), fakeFetch));
+  const client = new Client({ name: "test-client", version: "0.1.0" });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  await server.connect(serverTransport);
+  await client.connect(clientTransport);
+
+  try {
+    const response = await client.callTool({
+      name: "kaiten_list_activity",
+      arguments: { limit: 10 },
+    });
+    expect(response.isError).not.toBe(true);
+    const structured = response.structuredContent as {
+      result?: { items?: Array<{ action?: string }> };
+    };
+    expect(structured?.result?.items?.[0]?.action).toBe("card_update");
+  } finally {
+    await client.close();
+    await server.close();
+  }
+});
+
+test("registers and serves kaiten_upload_attachment over MCP", async () => {
+  const responses = [
+    cardResponse(),
+    boardsResponse(),
+    { id: 703452 },
+    cardResponse(),
+    {
+      id: 99,
+      url: "https://files.example.test/x.txt",
+      name: "x.txt",
+      type: 8,
+      size: 3,
+    },
+  ];
+  const fakeFetch = (async () =>
+    jsonResponse(responses.shift())) as unknown as typeof fetch;
+  const server = createServer(new KaitenClient(baseWriteConfig(), fakeFetch));
+  const client = new Client({ name: "test-client", version: "0.1.0" });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  await server.connect(serverTransport);
+  await client.connect(clientTransport);
+
+  try {
+    const response = await client.callTool({
+      name: "kaiten_upload_attachment",
+      arguments: {
+        card: 49505819,
+        filename: "x.txt",
+        content_base64: Buffer.from("hey").toString("base64"),
+      },
+    });
+    expect(response.isError).not.toBe(true);
+    const structured = response.structuredContent as {
+      result?: { file?: { name?: string } };
+    };
+    expect(structured?.result?.file?.name).toBe("x.txt");
+  } finally {
+    await client.close();
+    await server.close();
+  }
+});
+
 test("registers and serves kaiten_list_timesheet over MCP", async () => {
   const responses = [
     { id: 703452 },

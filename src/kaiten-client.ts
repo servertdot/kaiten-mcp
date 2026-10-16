@@ -5,12 +5,14 @@ import {
   documentUrlFromProperty,
   isDocumentUid,
 } from "./document.js";
-import { cardKey } from "./normalize.js";
+import { cardKey, normalizeActivityEvent } from "./normalize.js";
 import type {
   AttachmentContent,
   CardSearchResponse,
+  KaitenActivityPage,
   KaitenBoard,
   KaitenCard,
+  KaitenCardType,
   KaitenChecklistSummary,
   KaitenComment,
   KaitenCustomProperty,
@@ -240,6 +242,57 @@ export interface ListTimesheetInput {
   personal?: boolean;
 }
 
+export interface ListUsersInput {
+  query?: string;
+  limit?: number;
+  offset?: number;
+  includeInactive?: boolean;
+}
+
+export interface ListCardTypesInput {
+  includeArchived?: boolean;
+  limit?: number;
+  offset?: number;
+}
+
+export interface UpdateCommentInput {
+  card: string | number;
+  spaceId?: number;
+  commentId: number;
+  text: string;
+}
+
+export interface RemoveCommentInput {
+  card: string | number;
+  spaceId?: number;
+  commentId: number;
+}
+
+export interface ListDocumentsInput {
+  query?: string;
+  limit?: number;
+  offset?: number;
+}
+
+export interface ListActivityInput {
+  limit?: number;
+  cursor?: string;
+  card?: string | number;
+  spaceId?: number;
+  authorId?: number;
+  actions?: string;
+  createdAfter?: string;
+  createdBefore?: string;
+}
+
+export interface UploadAttachmentInput {
+  card: string | number;
+  spaceId?: number;
+  filename: string;
+  contentBase64: string;
+  contentType?: string;
+}
+
 export class KaitenApiError extends Error {
   constructor(
     message: string,
@@ -315,7 +368,13 @@ export class KaitenClient {
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) KaitenMCP/0.1.0",
       );
       if (this.cookieHeader) headers.set("Cookie", this.cookieHeader);
-      if (init.body !== undefined) headers.set("Content-Type", "application/json");
+      if (init.body !== undefined) {
+        const isFormData =
+          typeof FormData !== "undefined" && init.body instanceof FormData;
+        if (!isFormData && !headers.has("Content-Type")) {
+          headers.set("Content-Type", "application/json");
+        }
+      }
 
       const response = await this.fetchImpl(url, {
         ...init,
@@ -566,14 +625,22 @@ export class KaitenClient {
     );
   }
 
-  async listDocuments(query: string): Promise<KaitenDocument[]> {
-    const params = new URLSearchParams({ query, limit: "100" });
+  async listDocuments(input: ListDocumentsInput = {}): Promise<KaitenDocument[]> {
+    const params = new URLSearchParams({
+      limit: String(Math.min(Math.max(input.limit ?? 100, 1), 100)),
+      offset: String(Math.max(input.offset ?? 0, 0)),
+    });
+    if (input.query) params.set("query", input.query);
     return this.request<KaitenDocument[]>(
       "documents",
       {},
       params,
       "latest",
     );
+  }
+
+  async readDocument(reference: string): Promise<KaitenDocument> {
+    return this.resolveDocument(reference);
   }
 
   async getDocument(documentUid: string): Promise<KaitenDocument> {
@@ -589,7 +656,7 @@ export class KaitenClient {
     if (isDocumentUid(reference)) return this.getDocument(reference);
 
     const normalized = reference.toLowerCase();
-    const exact = (await this.listDocuments(reference)).filter(
+    const exact = (await this.listDocuments({ query: reference })).filter(
       (document) =>
         document.uid.toLowerCase() === normalized ||
         document.key?.toLowerCase() === normalized,
@@ -828,6 +895,196 @@ export class KaitenClient {
       method: "POST",
       body: JSON.stringify({ text }),
     });
+  }
+
+  async listUsers(input: ListUsersInput = {}): Promise<KaitenUser[]> {
+    const params = new URLSearchParams({
+      limit: String(Math.min(Math.max(input.limit ?? 100, 1), 100)),
+      offset: String(Math.max(input.offset ?? 0, 0)),
+      include_inactive: String(input.includeInactive ?? false),
+    });
+    if (input.query) params.set("query", input.query);
+    return this.request<KaitenUser[]>("users", {}, params);
+  }
+
+  async listCardTypes(input: ListCardTypesInput = {}): Promise<KaitenCardType[]> {
+    const types = await this.request<KaitenCardType[]>(
+      "card-types",
+      {},
+      undefined,
+      "latest",
+    );
+    const includeArchived = input.includeArchived ?? false;
+    const filtered = includeArchived
+      ? types
+      : types.filter((type) => !type.archived);
+    const offset = Math.max(input.offset ?? 0, 0);
+    const limit = input.limit;
+    if (limit === undefined) {
+      return filtered.slice(offset);
+    }
+    return filtered.slice(offset, offset + Math.min(Math.max(limit, 1), 100));
+  }
+
+  async updateComment(input: UpdateCommentInput): Promise<KaitenComment> {
+    if (!Number.isSafeInteger(input.commentId) || input.commentId <= 0) {
+      throw new Error("comment_id must be a positive integer");
+    }
+    const text = input.text.trim();
+    if (!text) {
+      throw new Error("text is required");
+    }
+    if (text.length > 4_096) {
+      throw new Error("text must be at most 4096 characters");
+    }
+
+    await this.assertExpectedActor();
+    const card = await this.assertCardInBoundary(input.card, input.spaceId);
+    return this.request<KaitenComment>(
+      `cards/${card.id}/comments/${input.commentId}`,
+      {
+        method: "PATCH",
+        body: JSON.stringify({ text }),
+      },
+    );
+  }
+
+  async removeComment(input: RemoveCommentInput): Promise<{ id: number }> {
+    if (!Number.isSafeInteger(input.commentId) || input.commentId <= 0) {
+      throw new Error("comment_id must be a positive integer");
+    }
+
+    await this.assertExpectedActor();
+    const card = await this.assertCardInBoundary(input.card, input.spaceId);
+    return this.request<{ id: number }>(
+      `cards/${card.id}/comments/${input.commentId}`,
+      { method: "DELETE" },
+    );
+  }
+
+  private parseActivityPage(raw: unknown, limit: number): KaitenActivityPage {
+    const record =
+      raw && typeof raw === "object" && !Array.isArray(raw)
+        ? (raw as Record<string, unknown>)
+        : {};
+    const itemsRaw = Array.isArray(raw)
+      ? raw
+      : Array.isArray(record.items)
+        ? record.items
+        : Array.isArray(record.data)
+          ? record.data
+          : [];
+    const nextCursor =
+      typeof record.next_cursor === "string"
+        ? record.next_cursor
+        : typeof record.cursor === "string"
+          ? record.cursor
+          : null;
+    return {
+      items: itemsRaw.map((item) =>
+        normalizeActivityEvent(item as Record<string, unknown>),
+      ),
+      limit,
+      next_cursor: nextCursor,
+    };
+  }
+
+  async listActivity(input: ListActivityInput = {}): Promise<KaitenActivityPage> {
+    const limit = Math.min(Math.max(input.limit ?? 100, 1), 100);
+    const params = new URLSearchParams({ limit: String(limit) });
+    if (input.cursor) params.set("cursor", input.cursor);
+    if (input.authorId !== undefined) {
+      params.set("author_id", String(input.authorId));
+    }
+    if (input.actions) params.set("actions", input.actions);
+    if (input.createdAfter) params.set("created_after", input.createdAfter);
+    if (input.createdBefore) params.set("created_before", input.createdBefore);
+    if (input.card !== undefined) {
+      const card = await this.assertCardInBoundary(input.card, input.spaceId);
+      params.set("card_id", String(card.id));
+    }
+
+    try {
+      const raw = await this.request<unknown>(
+        "company/activity",
+        {},
+        params,
+        "latest",
+      );
+      return this.parseActivityPage(raw, limit);
+    } catch (error) {
+      if (error instanceof KaitenApiError && error.status === 403) {
+        throw new Error(
+          "Company activity feed requires company-level permission (HTTP 403)",
+        );
+      }
+      throw error;
+    }
+  }
+
+  private assertSafeBasename(filename: string): string {
+    const trimmed = filename.trim();
+    if (
+      !trimmed ||
+      trimmed.includes("/") ||
+      trimmed.includes("\\") ||
+      trimmed === "." ||
+      trimmed === ".." ||
+      trimmed.includes("\0")
+    ) {
+      throw new Error("filename must be a safe basename");
+    }
+    return trimmed;
+  }
+
+  private decodeAttachmentBase64(content: string): Uint8Array {
+    try {
+      const binary = atob(content.trim());
+      const bytes = new Uint8Array(binary.length);
+      for (let index = 0; index < binary.length; index += 1) {
+        bytes[index] = binary.charCodeAt(index);
+      }
+      return bytes;
+    } catch {
+      throw new Error("content_base64 must be valid base64");
+    }
+  }
+
+  async uploadAttachment(input: UploadAttachmentInput): Promise<KaitenFile> {
+    const filename = this.assertSafeBasename(input.filename);
+    const bytes = this.decodeAttachmentBase64(input.contentBase64);
+    if (bytes.byteLength > this.config.maxAttachmentBytes) {
+      throw new Error(
+        `Attachment is ${bytes.byteLength} bytes; limit is ${this.config.maxAttachmentBytes}`,
+      );
+    }
+
+    await this.assertExpectedActor();
+    const card = await this.resolveCard(input.card, input.spaceId);
+
+    const form = new FormData();
+    const blob = new Blob([Buffer.from(bytes)], {
+      type: input.contentType ?? "application/octet-stream",
+    });
+    form.append("file", blob, filename);
+
+    try {
+      return await this.request<KaitenFile>(`cards/${card.id}/files`, {
+        method: "POST",
+        body: form,
+      });
+    } catch (error) {
+      if (
+        error instanceof KaitenApiError &&
+        error.status === 403 &&
+        error.responseBody?.includes("public_api_legacy_file_upload_disabled")
+      ) {
+        throw new Error(
+          "Legacy Kaiten file upload is disabled for this company; restricted-access migration may be required",
+        );
+      }
+      throw error;
+    }
   }
 
   private assertTimeLogDate(forDate: string): string {
