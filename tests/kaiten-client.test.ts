@@ -1361,3 +1361,19 @@ function boardsResponse() {
     },
   ];
 }
+
+test("reads string-encoded ProseMirror document data", async () => {
+  const uid = "a3f7c2d1-84e5-4b2a-9c6f-1d2e3f4a5b6c";
+  const data = { type: "doc", content: [{ type: "paragraph", content: [{ type: "text", text: "Document text" }] }] };
+  const fakeFetch = (async () => jsonResponse({ uid, id: 5, title: "Doc", data: JSON.stringify(data) })) as unknown as typeof fetch;
+  const document = await new KaitenClient(config(), fakeFetch).getDocument(uid);
+  expect(document.data).toEqual(data);
+});
+
+test("rejects malformed string-encoded document data", async () => {
+  const uid = "a3f7c2d1-84e5-4b2a-9c6f-1d2e3f4a5b6c";
+  for (const data of ["{broken", JSON.stringify({ type: "paragraph" })]) {
+    const fakeFetch = (async () => jsonResponse({ uid, id: 5, title: "Doc", data })) as unknown as typeof fetch;
+    await expect(new KaitenClient(config(), fakeFetch).getDocument(uid)).rejects.toThrow("Kaiten document data");
+  }
+});

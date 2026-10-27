@@ -106,7 +106,7 @@ export interface KaitenDocument {
   entity_type?: "document";
   access?: "for_everyone" | "by_invite";
   data?: ProseMirrorNode | null;
-  version?: number;
+  version?: number | null;
   published_version?: number | null;
   publish_date?: string | null;
   public?: boolean;

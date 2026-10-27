@@ -1,6 +1,7 @@
 import type { KaitenConfig } from "./config.js";
 import { webBaseUrl } from "./config.js";
 import {
+  documentContentRevision,
   documentReferenceFromUrl,
   documentUrlFromProperty,
   isDocumentUid,
@@ -362,10 +363,10 @@ export class KaitenClient {
       headers.set("Accept", "application/json");
       headers.set("Authorization", `Bearer ${this.config.token}`);
       headers.set("X-Kaiten-Client", "kaiten-mcp");
-      headers.set("X-Kaiten-Client-Version", "0.1.0");
+      headers.set("X-Kaiten-Client-Version", "0.2.0");
       headers.set(
         "User-Agent",
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) KaitenMCP/0.1.0",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) KaitenMCP/0.2.0",
       );
       if (this.cookieHeader) headers.set("Cookie", this.cookieHeader);
       if (init.body !== undefined) {
@@ -643,13 +644,57 @@ export class KaitenClient {
     return this.resolveDocument(reference);
   }
 
+  async updateLinkedDocument(input: ReadLinkedDocumentInput & {
+    expectedVersion?: number;
+    expectedContentRevision?: string;
+    mode: "append" | "replace";
+    data: import("./types.js").ProseMirrorNode;
+  }): Promise<KaitenDocument> {
+    await this.assertExpectedActor();
+    const { document } = await this.readLinkedDocument(input);
+    if (input.expectedVersion === undefined && input.expectedContentRevision === undefined) {
+      throw new Error("Document version or content revision is required");
+    }
+    if (input.expectedVersion !== undefined && (typeof document.version !== "number" || document.version !== input.expectedVersion)) {
+      throw new Error("Document version changed or is unavailable; read it again before updating");
+    }
+    if (input.expectedContentRevision !== undefined && documentContentRevision(document.data, document.uid) !== input.expectedContentRevision) {
+      throw new Error("Document content changed or is unavailable; read it again before updating");
+    }
+    if (document.archived) throw new Error("Cannot update an archived document");
+    if (input.mode === "append" && (document.data?.type !== "doc" || !Array.isArray(document.data.content))) {
+      throw new Error("Cannot append: existing document data is unavailable or invalid");
+    }
+    const data = input.mode === "append"
+      ? { ...document.data!, content: [...document.data!.content!, ...(input.data.content ?? [])] }
+      : input.data;
+    return this.request<KaitenDocument>(`documents/${encodeURIComponent(document.uid)}`, {
+      method: "PATCH",
+      body: JSON.stringify({ data }),
+    }, undefined, "latest");
+  }
+
   async getDocument(documentUid: string): Promise<KaitenDocument> {
-    return this.request<KaitenDocument>(
+    const document = await this.request<Omit<KaitenDocument, "data"> & { data?: NonNullable<KaitenDocument["data"]> | null | string }>(
       `documents/${encodeURIComponent(documentUid)}`,
       {},
       undefined,
       "latest",
     );
+    if (typeof document.data === "string") {
+      let data: unknown;
+      try {
+        data = JSON.parse(document.data);
+      } catch {
+        throw new Error("Kaiten document data is not valid JSON");
+      }
+      if (!data || typeof data !== "object" || Array.isArray(data) || (data as { type?: unknown }).type !== "doc" || !Array.isArray((data as { content?: unknown }).content)) {
+        throw new Error("Kaiten document data is not a valid ProseMirror document");
+      }
+      return { ...document, data: data as NonNullable<KaitenDocument["data"]> };
+    }
+    const { data, ...metadata } = document;
+    return data === undefined ? metadata : { ...metadata, data };
   }
 
   private async resolveDocument(reference: string): Promise<KaitenDocument> {

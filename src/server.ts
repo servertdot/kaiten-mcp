@@ -2,7 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 
 import { webBaseUrl } from "./config.js";
-import { proseMirrorToMarkdown } from "./document.js";
+import { documentContentRevision, markdownToProseMirror, proseMirrorToMarkdown } from "./document.js";
 import { KaitenClient } from "./kaiten-client.js";
 import type { KaitenCustomPropertyValue } from "./types.js";
 import {
@@ -102,7 +102,7 @@ function cardUrl(
 
 export function createServer(client: KaitenClient): McpServer {
   const server = new McpServer(
-    { name: "kaiten-mcp", version: "0.1.0" },
+    { name: "kaiten-mcp", version: "0.2.0" },
     { instructions: SERVER_INSTRUCTIONS },
   );
 
@@ -438,9 +438,38 @@ export function createServer(client: KaitenClient): McpServer {
             archived: linked.document.archived ?? false,
             access: linked.document.access ?? null,
             schema_version: linked.document.schema_version ?? null,
+            content_revision: documentContentRevision(linked.document.data, linked.document.uid),
             text: proseMirrorToMarkdown(linked.document.data),
           },
         };
+      }),
+  );
+
+  server.registerTool(
+    "kaiten_update_linked_document",
+    {
+      title: "Update a Kaiten document linked from a card",
+      description: "Append formatted Markdown to a document linked from an allowed card, or explicitly replace the whole document. Read it first and provide expected_version or expected_content_revision returned by the read tool. These checks are not atomic with the API update. Supported: headings 1–3, paragraphs, links, emphasis, lists, quotes, code and tables.",
+      inputSchema: z.object({
+        card: cardRefSchema,
+        space_id: z.number().int().positive().optional(),
+        property_name: z.string().trim().min(1).max(128),
+        expected_version: z.number().int().nonnegative().optional(),
+        expected_content_revision: z.string().regex(/^[0-9a-f]{64}$/).optional(),
+        mode: z.enum(["append", "replace"]),
+        markdown: z.string().min(1).max(200000),
+      }),
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
+    },
+    async ({ card, space_id, property_name, expected_version, expected_content_revision, mode, markdown }) =>
+      tool(async () => {
+        const data = markdownToProseMirror(markdown);
+        const document = await client.updateLinkedDocument({
+          card, ...(space_id === undefined ? {} : { spaceId: space_id }),
+          propertyName: property_name, ...(expected_version === undefined ? {} : { expectedVersion: expected_version }),
+          ...(expected_content_revision === undefined ? {} : { expectedContentRevision: expected_content_revision }), mode, data,
+        });
+        return { document: { ...normalizeDocumentSummary(document), text: proseMirrorToMarkdown(document.data) } };
       }),
   );
 
@@ -496,6 +525,8 @@ export function createServer(client: KaitenClient): McpServer {
         return {
           document: {
             ...normalizeDocumentSummary(resolved),
+            version: resolved.version ?? null,
+            content_revision: documentContentRevision(resolved.data, resolved.uid),
             text: proseMirrorToMarkdown(resolved.data),
           },
         };

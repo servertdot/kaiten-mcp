@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type {
   KaitenCustomPropertyValue,
   ProseMirrorMark,
@@ -5,7 +6,17 @@ import type {
 } from "./types.js";
 
 const DOCUMENT_ROUTE =
-  /(?:^|\/)(?:document|documents|doc|docs)\/([a-zA-Z0-9_-]+)(?:\/|$)/;
+  /(?:^|\/)(?:document|documents|doc|docs)\/(?:d\/)?([a-zA-Z0-9_-]+)(?:\/|$)/;
+
+export function documentContentRevision(data: ProseMirrorNode | null | undefined, uid: string): string | null {
+  if (!data || data.type !== "doc" || !Array.isArray(data.content)) return null;
+  const stable = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(stable);
+    if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([key, item]) => [key, stable(item)]));
+    return value;
+  };
+  return createHash("sha256").update(JSON.stringify(stable({ uid, data }))).digest("hex");
+}
 
 function stringAttribute(
   attrs: Record<string, unknown> | undefined,
@@ -148,6 +159,10 @@ function renderBlock(node: ProseMirrorNode): string {
       return (node.content ?? []).map(renderBlock).filter(Boolean).join("\n\n");
     case "paragraph":
       return (node.content ?? []).map(renderInline).join("");
+    case "heading1":
+    case "heading2":
+    case "heading3":
+      return `${"#".repeat(Number(node.type.slice(-1)))} ${(node.content ?? []).map(renderInline).join("")}`;
     case "heading": {
       const requestedLevel = Number(node.attrs?.level ?? 1);
       const level = Number.isInteger(requestedLevel)
@@ -212,4 +227,61 @@ function renderBlock(node: ProseMirrorNode): string {
 export function proseMirrorToMarkdown(data: ProseMirrorNode | null | undefined): string {
   if (!data) return "";
   return renderBlock(data).replace(/\n{3,}/g, "\n\n").trim();
+}
+
+// Parse Markdown with Bun and translate its element tree to Kaiten nodes.
+export function markdownToProseMirror(markdown: string): ProseMirrorNode {
+  type Element = { type?: string | symbol; props?: Record<string, unknown> };
+  const unsupported = (name: string): never => { throw new Error(`Unsupported Markdown: ${name}`); };
+  const convert = (value: unknown, marks: ProseMirrorMark[] = [], code = false): ProseMirrorNode[] => {
+    if (Array.isArray(value)) return value.flatMap((item) => convert(item, marks, code));
+    if (typeof value === "string") {
+      const text = code ? value : value.replace(/\n/g, " ");
+      return text ? [{ type: "text", text, ...(marks.length ? { marks } : {}) }] : [];
+    }
+    if (!value || typeof value !== "object") return [];
+    const element = value as Element;
+    const props = element.props ?? {};
+    const type = element.type;
+    const children = () => convert(props.children, marks, code);
+    if (type === Symbol.for("react.fragment")) return children();
+    const node = (name: string): ProseMirrorNode[] => [{ type: name, content: children() }];
+    const marked = (mark: ProseMirrorMark) => convert(props.children, [...marks, mark], code);
+    switch (type) {
+      case undefined: return children();
+      case "p": return node("paragraph");
+      case "h1": case "h2": case "h3": return node(`heading${type[1]}`);
+      case "h4": case "h5": case "h6": return unsupported("heading levels 4–6");
+      case "strong": return marked({ type: "strong" });
+      case "em": return marked({ type: "em" });
+      case "del": return marked({ type: "strike" });
+      case "code": return marked({ type: "code" });
+      case "a": return marked({ type: "link", attrs: { href: props.href, ...(props.title ? { title: props.title } : {}) } });
+      case "br": return [{ type: "hard_break" }];
+      case "blockquote": return node("blockquote");
+      case "pre": return [{ type: "code_block", ...(typeof props.language === "string" ? { attrs: { language: props.language } } : {}), content: convert(props.children, [], true) }];
+      case "hr": return [{ type: "horizontal_rule" }];
+      case "ul": return node("bullet_list");
+      case "ol": return [{ type: "ordered_list", ...(typeof props.start === "number" ? { attrs: { order: props.start } } : {}), content: children() }];
+      case "li": {
+        if (props.checked !== undefined) return unsupported("task lists");
+        const nodes = children();
+        const firstBlock = nodes.findIndex((n) => n.type !== "text" && n.type !== "hard_break");
+        const split = firstBlock < 0 ? nodes.length : firstBlock;
+        const content = split > 0 ? [{ type: "paragraph", content: nodes.slice(0, split) }, ...nodes.slice(split)] : nodes;
+        if (content[0]?.type !== "paragraph") content.unshift({ type: "paragraph", content: [] });
+        return [{ type: "list_item", content }];
+      }
+      case "table": return node("table");
+      case "thead": case "tbody": return children();
+      case "tr": return node("table_row");
+      case "th": case "td": return [{ type: type === "th" ? "table_header" : "table_cell", content: [{ type: "paragraph", content: children() }] }];
+      case "img": return unsupported("images");
+      case "html": return unsupported("HTML");
+      default: return unsupported(String(type));
+    }
+  };
+  const content = convert(Bun.markdown.react(markdown));
+  if (!content.length) throw new Error("Markdown must contain at least one block");
+  return { type: "doc", content };
 }

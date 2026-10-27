@@ -88,3 +88,22 @@ describe("Kaiten documents", () => {
     );
   });
 });
+
+test("converts Markdown structure and preserves line breaks", async () => {
+  const { markdownToProseMirror } = await import("../src/document.js");
+  const doc = markdownToProseMirror("# Заголовок\n\nОдин\nдва  \n**три**\n\n- пункт\n  - вложенный\n\n| A | B |\n|---|---|\n| C | D |");
+  expect(doc.content?.map((node) => node.type)).toEqual(["heading1", "paragraph", "bullet_list", "table"]);
+  expect(doc.content?.[1]?.content).toEqual([
+    { type: "text", text: "Один" }, { type: "text", text: " " },
+    { type: "text", text: "два" }, { type: "hard_break" },
+    { type: "text", text: "три", marks: [{ type: "strong" }] },
+  ]);
+  expect(doc.content?.[2]?.content?.[0]?.content?.[1]?.type).toBe("bullet_list");
+  expect(doc.content?.[3]?.content?.[0]?.content?.[0]?.type).toBe("table_header");
+  expect(() => markdownToProseMirror("- [x] task")).toThrow("task lists");
+});
+
+test("extracts UID from the standard /documents/d/ URL", () => {
+  const uid = "a3f7c2d1-84e5-4b2a-9c6f-1d2e3f4a5b6c";
+  expect(documentReferenceFromUrl(`https://kaiten.example.test/documents/d/${uid}`, "https://kaiten.example.test")).toBe(uid);
+});

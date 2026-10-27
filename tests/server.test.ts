@@ -760,3 +760,76 @@ test("registers and serves kaiten_list_timesheet over MCP", async () => {
     await server.close();
   }
 });
+
+test("updates linked document through MCP and rejects stale versions", async () => {
+  const uid = "a3f7c2d1-84e5-4b2a-9c6f-1d2e3f4a5b6c";
+  const config: KaitenConfig = {
+    apiBaseUrl: new URL("https://kaiten.example.test/api/v1"), token: "token",
+    defaultSpaceId: 1, allowedSpaceIds: new Set([1]), allowedBoardIds: new Set([2]),
+    allowedFileHosts: new Set(), maxAttachmentBytes: 1024, expectedActorId: 7,
+  };
+  const existing = { type: "doc", content: [{ type: "custom_block", attrs: { keep: true } }] };
+  let patch: any;
+  const fakeFetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const path = new URL(String(input)).pathname;
+    if (path === "/api/v1/users/current") return jsonResponse({ id: 7 });
+    if (path === "/api/v1/cards/10") return jsonResponse({ id: 10, board_id: 2, properties: { id_3: `https://kaiten.example.test/document/${uid}` } });
+    if (path === "/api/v1/spaces/1/boards") return jsonResponse([{ id: 2 }]);
+    if (path === "/api/v1/company/custom-properties") return jsonResponse([{ id: 3, name: "Spec", type: "url", condition: "active" }]);
+    if (path === `/api/latest/documents/${uid}`) {
+      if (init?.method === "PATCH") { patch = JSON.parse(String(init.body)); return jsonResponse({ uid, id: 5, title: "Doc", version: 4, data: patch.data }); }
+      return jsonResponse({ uid, id: 5, title: "Doc", version: 3, data: existing });
+    }
+    return new Response("Not found", { status: 404 });
+  }) as typeof fetch;
+  const server = createServer(new KaitenClient(config, fakeFetch));
+  const client = new Client({ name: "test", version: "1" });
+  const [a, b] = InMemoryTransport.createLinkedPair();
+  await server.connect(b); await client.connect(a);
+  try {
+    const args = { card: 10, property_name: "Spec", expected_version: 2, mode: "append", markdown: "## Новое\n\n**Текст**" };
+    expect((await client.callTool({ name: "kaiten_update_linked_document", arguments: args })).isError).toBe(true);
+    expect(patch).toBeUndefined();
+    const response = await client.callTool({ name: "kaiten_update_linked_document", arguments: { ...args, expected_version: 3 } });
+    expect(response.isError).not.toBe(true);
+    expect(patch.data.content[0]).toEqual(existing.content[0]);
+    expect(patch.data.content[1].type).toBe("heading2");
+    expect(patch.data.content[2].content[0].marks).toEqual([{ type: "strong" }]);
+  } finally { await client.close(); await server.close(); }
+});
+
+test("uses a content revision to guard linked document updates without a version", async () => {
+  const uid = "a3f7c2d1-84e5-4b2a-9c6f-1d2e3f4a5b6c";
+  const config: KaitenConfig = { apiBaseUrl: new URL("https://kaiten.example.test/api/v1"), token: "token", defaultSpaceId: 1, allowedSpaceIds: new Set([1]), allowedBoardIds: new Set([2]), allowedFileHosts: new Set(), maxAttachmentBytes: 1024, expectedActorId: 7 };
+  let data = { type: "doc", content: [{ type: "paragraph", content: [{ type: "text", text: "Original" }] }] };
+  let writes = 0;
+  const fakeFetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const path = new URL(String(input)).pathname;
+    if (path === "/api/v1/users/current") return jsonResponse({ id: 7 });
+    if (path === "/api/v1/cards/10") return jsonResponse({ id: 10, board_id: 2, properties: { id_3: `https://kaiten.example.test/documents/d/${uid}` } });
+    if (path === "/api/v1/spaces/1/boards") return jsonResponse([{ id: 2 }]);
+    if (path === "/api/v1/company/custom-properties") return jsonResponse([{ id: 3, name: "Spec", type: "url", condition: "active" }]);
+    if (path === `/api/latest/documents/${uid}`) {
+      if (init?.method === "PATCH") { writes++; data = JSON.parse(String(init.body)).data; }
+      return jsonResponse({ uid, id: 5, title: "Doc", version: null, data: JSON.stringify(data) });
+    }
+    return new Response("Not found", { status: 404 });
+  }) as typeof fetch;
+  const server = createServer(new KaitenClient(config, fakeFetch));
+  const client = new Client({ name: "test", version: "1" });
+  const [a, b] = InMemoryTransport.createLinkedPair();
+  await server.connect(b); await client.connect(a);
+  try {
+    const read = await client.callTool({ name: "kaiten_read_linked_document", arguments: { card: 10, property_name: "Spec" } });
+    expect(read.isError).not.toBe(true);
+    const revision = (read.structuredContent as any).result.document.content_revision;
+    expect(typeof revision).toBe("string");
+    const args = { card: 10, property_name: "Spec", expected_content_revision: revision, mode: "append", markdown: "**New**" };
+    data.content[0]!.content[0]!.text = "Changed";
+    expect((await client.callTool({ name: "kaiten_update_linked_document", arguments: args })).isError).toBe(true);
+    expect(writes).toBe(0);
+    data.content[0]!.content[0]!.text = "Original";
+    expect((await client.callTool({ name: "kaiten_update_linked_document", arguments: args })).isError).not.toBe(true);
+    expect(writes).toBe(1);
+  } finally { await client.close(); await server.close(); }
+});
